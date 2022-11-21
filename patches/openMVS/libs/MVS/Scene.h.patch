@@ -1,0 +1,11 @@
+--- a/openMVS/libs/MVS/Scene.h	2022-09-02 22:34:49.798267676 +0100
++++ b/openMVS/libs/MVS/Scene.h	2022-09-02 22:36:40.107253344 +0100
+@@ -105,8 +105,6 @@
+ 	bool ScaleImages(unsigned nMaxResolution = 0, REAL scale = 0, const String& folderName = String());
+ 
+ 	// Dense reconstruction
+-	bool DenseReconstruction(int nFusionMode=0);
+-	bool ComputeDepthMaps(DenseDepthMapData& data);
+ 	void DenseReconstructionEstimate(void*);
+ 	void DenseReconstructionFilter(void*);
+ 	void PointCloudFilter(int thRemove=-1);

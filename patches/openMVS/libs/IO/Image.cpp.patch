@@ -1,0 +1,11 @@
+--- a/openMVS/libs/IO/Image.cpp	2022-09-02 23:37:03.778748137 +0100
++++ b/openMVS/libs/IO/Image.cpp	2022-10-07 13:24:19.177193061 +0100
+@@ -895,6 +895,8 @@
+ 	#ifdef _IMAGE_JPG
+ 	else if (_tcsncicmp(fext, _T(".jpg"), 4) == 0)
+ 		pImage = new CImageJPG();
++	else if (_tcsncicmp(fext, _T(".jpeg"), 4) == 0)
++		pImage = new CImageJPG();
+ 	#endif
+ 	#ifdef _IMAGE_TIFF
+ 	else if (_tcsncicmp(fext, _T(".tif"), 4) == 0 || _tcsncicmp(fext, _T(".tiff"), 5) == 0)

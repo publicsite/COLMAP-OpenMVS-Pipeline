@@ -1,0 +1,19 @@
+--- a/openMVS/MvgMvsPipeline.py	2022-09-29 13:41:34.748465405 +0100
++++ b/openMVS/MvgMvsPipeline.py	2022-09-29 13:43:03.769254049 +0100
+@@ -199,12 +199,15 @@
+             ["Compute features",             # 1
+              os.path.join(OPENMVG_BIN, "openMVG_main_ComputeFeatures"),
+              ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-o", "%matches_dir%", "-m", "SIFT"]],
++            ["Compute VLAD",             # 1
++             os.path.join(OPENMVG_BIN, "openMVG_main_ComputeVLAD"),
++             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-o", "%matches_dir%", "--pair_file", "%matches_dir%/vlad_pairs.txt"]],
+             ["Compute pairs",                # 2
+              os.path.join(OPENMVG_BIN, "openMVG_main_PairGenerator"),
+              ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-o", "%matches_dir%"+FOLDER_DELIM+"pairs.bin"]],
+             ["Compute matches",              # 3
+              os.path.join(OPENMVG_BIN, "openMVG_main_ComputeMatches"),
+-             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-p", "%matches_dir%"+FOLDER_DELIM+"pairs.bin", "-o", "%matches_dir%"+FOLDER_DELIM+"matches.putative.bin", "-n", "AUTO"]],
++             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-p", "%matches_dir%"+FOLDER_DELIM+"pairs.bin", "-o", "%matches_dir%"+FOLDER_DELIM+"matches.putative.bin", "-n", "AUTO", "--pair_list", "%matches_dir%/vlad_pairs.txt"]],
+             ["Filter matches",               # 4
+              os.path.join(OPENMVG_BIN, "openMVG_main_GeometricFilter"),
+              ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-m", "%matches_dir%"+FOLDER_DELIM+"matches.putative.bin", "-o", "%matches_dir%"+FOLDER_DELIM+"matches.f.bin"]],

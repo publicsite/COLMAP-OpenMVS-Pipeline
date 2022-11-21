@@ -1,0 +1,10 @@
+--- a/openMVS/libs/MVS/SceneDensify.h	2021-11-03 06:38:48.000000000 +0000
++++ b/openMVS/libs/MVS/SceneDensify.h	2022-09-02 21:56:09.194012905 +0100
+@@ -55,7 +55,6 @@
+ 	DepthMapsData(Scene& _scene);
+ 	~DepthMapsData();
+ 
+-	bool SelectViews(IIndexArr& images, IIndexArr& imagesMap, IIndexArr& neighborsMap);
+ 	bool SelectViews(DepthData& depthData);
+ 	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps);
+ 	bool InitDepthMap(DepthData& depthData);

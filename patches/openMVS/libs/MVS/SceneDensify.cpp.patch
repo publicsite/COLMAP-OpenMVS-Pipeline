@@ -1,0 +1,439 @@
+--- a/openMVS/libs/MVS/SceneDensify.cpp	2022-09-02 23:10:02.744915868 +0100
++++ b/openMVS/libs/MVS/SceneDensify.cpp	2022-09-02 23:06:16.994978031 +0100
+@@ -33,8 +33,6 @@
+ #include "Scene.h"
+ #include "SceneDensify.h"
+ #include "PatchMatchCUDA.h"
+-// MRF: view selection
+-#include "../Math/TRWS/MRFEnergy.h"
+ 
+ using namespace MVS;
+ 
+@@ -138,135 +136,6 @@
+ } // destructor
+ /*----------------------------------------------------------------*/
+ 
+-
+-// globally choose the best target view for each image,
+-// trying in the same time the selected image pairs to cover the whole scene;
+-// the map of selected neighbors for each image is returned in neighborsMap.
+-// For each view a list of neighbor views ordered by number of shared sparse points and overlapped image area is given.
+-// Next a graph is formed such that the vertices are the views and two vertices are connected by an edge if the two views have each other as neighbors.
+-// For each vertex, a list of possible labels is created using the list of neighbor views and scored accordingly (the score is normalized by the average score).
+-// For each existing edge, the score is defined such that pairing the same two views for any two vertices is discouraged (a constant high penalty is applied for such edges).
+-// This primal-dual defined problem, even if NP hard, can be solved by a Belief Propagation like algorithm, obtaining in general a solution close enough to optimality.
+-bool DepthMapsData::SelectViews(IIndexArr& images, IIndexArr& imagesMap, IIndexArr& neighborsMap)
+-{
+-	// find all pair of images valid for dense reconstruction
+-	typedef std::unordered_map<uint64_t,float> PairAreaMap;
+-	PairAreaMap edges;
+-	double totScore(0);
+-	unsigned numScores(0);
+-	FOREACH(i, images) {
+-		const IIndex idx(images[i]);
+-		ASSERT(imagesMap[idx] != NO_ID);
+-		const ViewScoreArr& neighbors(arrDepthData[idx].neighbors);
+-		ASSERT(neighbors.GetSize() <= OPTDENSE::nMaxViews);
+-		// register edges
+-		FOREACHPTR(pNeighbor, neighbors) {
+-			const IIndex idx2(pNeighbor->idx.ID);
+-			ASSERT(imagesMap[idx2] != NO_ID);
+-			edges[MakePairIdx(idx,idx2)] = pNeighbor->idx.area;
+-			totScore += pNeighbor->score;
+-			++numScores;
+-		}
+-	}
+-	if (edges.empty())
+-		return false;
+-	const float avgScore((float)(totScore/(double)numScores));
+-
+-	// run global optimization
+-	const float fPairwiseMul = OPTDENSE::fPairwiseMul; // default 0.3
+-	const float fEmptyUnaryMult = 6.f;
+-	const float fEmptyPairwise = 8.f*OPTDENSE::fPairwiseMul;
+-	const float fSamePairwise = 24.f*OPTDENSE::fPairwiseMul;
+-	const IIndex _num_labels = OPTDENSE::nMaxViews+1; // N neighbors and an empty state
+-	const IIndex _num_nodes = images.GetSize();
+-	typedef MRFEnergy<TypeGeneral> MRFEnergyType;
+-	CAutoPtr<MRFEnergyType> energy(new MRFEnergyType(TypeGeneral::GlobalSize()));
+-	CAutoPtrArr<MRFEnergyType::NodeId> nodes(new MRFEnergyType::NodeId[_num_nodes]);
+-	typedef SEACAVE::cList<TypeGeneral::REAL, TypeGeneral::REAL, 0> EnergyCostArr;
+-	// unary costs: inverse proportional to the image pair score
+-	EnergyCostArr arrUnary(_num_labels);
+-	for (IIndex n=0; n<_num_nodes; ++n) {
+-		const ViewScoreArr& neighbors(arrDepthData[images[n]].neighbors);
+-		FOREACH(k, neighbors)
+-			arrUnary[k] = avgScore/neighbors[k].score; // use average score to normalize the values (not to depend so much on the number of features in the scene)
+-		arrUnary[neighbors.GetSize()] = fEmptyUnaryMult*(neighbors.IsEmpty()?avgScore*0.01f:arrUnary[neighbors.GetSize()-1]);
+-		nodes[n] = energy->AddNode(TypeGeneral::LocalSize(neighbors.GetSize()+1), TypeGeneral::NodeData(arrUnary.Begin()));
+-	}
+-	// pairwise costs: as ratios between the area to be covered and the area actually covered
+-	EnergyCostArr arrPairwise(_num_labels*_num_labels);
+-	for (PairAreaMap::const_reference edge: edges) {
+-		const PairIdx pair(edge.first);
+-		const float area(edge.second);
+-		const ViewScoreArr& neighborsI(arrDepthData[pair.i].neighbors);
+-		const ViewScoreArr& neighborsJ(arrDepthData[pair.j].neighbors);
+-		arrPairwise.Empty();
+-		FOREACHPTR(pNj, neighborsJ) {
+-			const IIndex i(pNj->idx.ID);
+-			const float areaJ(area/pNj->idx.area);
+-			FOREACHPTR(pNi, neighborsI) {
+-				const IIndex j(pNi->idx.ID);
+-				const float areaI(area/pNi->idx.area);
+-				arrPairwise.Insert(pair.i == i && pair.j == j ? fSamePairwise : fPairwiseMul*(areaI+areaJ));
+-			}
+-			arrPairwise.Insert(fEmptyPairwise+fPairwiseMul*areaJ);
+-		}
+-		for (const ViewScore& Ni: neighborsI) {
+-			const float areaI(area/Ni.idx.area);
+-			arrPairwise.Insert(fPairwiseMul*areaI+fEmptyPairwise);
+-		}
+-		arrPairwise.Insert(fEmptyPairwise*2);
+-		const IIndex nodeI(imagesMap[pair.i]);
+-		const IIndex nodeJ(imagesMap[pair.j]);
+-		energy->AddEdge(nodes[nodeI], nodes[nodeJ], TypeGeneral::EdgeData(TypeGeneral::GENERAL, arrPairwise.Begin()));
+-	}
+-
+-	// minimize energy
+-	MRFEnergyType::Options options;
+-	options.m_eps = OPTDENSE::fOptimizerEps;
+-	options.m_iterMax = OPTDENSE::nOptimizerMaxIters;
+-	#ifndef _RELEASE
+-	options.m_printIter = 1;
+-	options.m_printMinIter = 1;
+-	#endif
+-	#if 1
+-	TypeGeneral::REAL energyVal, lowerBound;
+-	energy->Minimize_TRW_S(options, lowerBound, energyVal);
+-	#else
+-	TypeGeneral::REAL energyVal;
+-	energy->Minimize_BP(options, energyVal);
+-	#endif
+-
+-	// extract optimized depth map
+-	neighborsMap.Resize(_num_nodes);
+-	for (IIndex n=0; n<_num_nodes; ++n) {
+-		const ViewScoreArr& neighbors(arrDepthData[images[n]].neighbors);
+-		IIndex& idxNeighbor = neighborsMap[n];
+-		const IIndex label((IIndex)energy->GetSolution(nodes[n]));
+-		ASSERT(label <= neighbors.GetSize());
+-		if (label == neighbors.GetSize()) {
+-			idxNeighbor = NO_ID; // empty
+-		} else {
+-			idxNeighbor = label;
+-			DEBUG_ULTIMATE("\treference image %3u paired with target image %3u (idx %2u)", images[n], neighbors[label].idx.ID, label);
+-		}
+-	}
+-
+-	// remove all images with no valid neighbors
+-	RFOREACH(i, neighborsMap) {
+-		if (neighborsMap[i] == NO_ID) {
+-			// remove image with no neighbors
+-			for (IIndex& imageMap: imagesMap)
+-				if (imageMap != NO_ID && imageMap > i)
+-					--imageMap;
+-			imagesMap[images[i]] = NO_ID;
+-			images.RemoveAtMove(i);
+-			neighborsMap.RemoveAtMove(i);
+-		}
+-	}
+-	return !images.IsEmpty();
+-} // SelectViews
+-/*----------------------------------------------------------------*/
+-
+ // compute visibility for the reference image (the first image in "images")
+ // and select the best views for reconstructing the depth-map;
+ // extract also all 3D points seen by the reference image
+@@ -1625,291 +1494,6 @@
+ static void* DenseReconstructionEstimateTmp(void*);
+ static void* DenseReconstructionFilterTmp(void*);
+ 
+-bool Scene::DenseReconstruction(int nFusionMode)
+-{
+-	DenseDepthMapData data(*this, nFusionMode);
+-
+-	// estimate depth-maps
+-	if (!ComputeDepthMaps(data))
+-		return false;
+-	if (ABS(nFusionMode) == 1)
+-		return true;
+-
+-	// fuse all depth-maps
+-	pointcloud.Release();
+-	if (OPTDENSE::nMinViewsFuse < 2) {
+-		// merge depth-maps
+-		data.depthMaps.MergeDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+-	} else {
+-		// fuse depth-maps
+-		data.depthMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+-	}
+-	#if TD_VERBOSE != TD_VERBOSE_OFF
+-	if (g_nVerbosityLevel > 2) {
+-		// print number of points with 3+ views
+-		size_t nPoints1m(0), nPoints2(0), nPoints3p(0);
+-		FOREACHPTR(pViews, pointcloud.pointViews) {
+-			switch (pViews->GetSize())
+-			{
+-			case 0:
+-			case 1:
+-				++nPoints1m;
+-				break;
+-			case 2:
+-				++nPoints2;
+-				break;
+-			default:
+-				++nPoints3p;
+-			}
+-		}
+-		VERBOSE("Dense point-cloud composed of:\n\t%u points with 1- views\n\t%u points with 2 views\n\t%u points with 3+ views", nPoints1m, nPoints2, nPoints3p);
+-	}
+-	#endif
+-
+-	if (!pointcloud.IsEmpty()) {
+-		if (IsBounded()) {
+-			TD_TIMER_START();
+-			const size_t numPoints = pointcloud.GetSize();
+-			pointcloud.RemovePointsOutside(obb);
+-			VERBOSE("Point-cloud trimmed to ROI: %u points removed (%s)",
+-				numPoints-pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
+-		}
+-		if (pointcloud.colors.IsEmpty() && OPTDENSE::nEstimateColors == 1)
+-			EstimatePointColors(images, pointcloud);
+-		if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)
+-			EstimatePointNormals(images, pointcloud);
+-	}
+-	return true;
+-} // DenseReconstruction
+-/*----------------------------------------------------------------*/
+-
+-// do first half of dense reconstruction: depth map computation
+-// results are saved to "data"
+-bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
+-{
+-	// compute point-cloud from the existing mesh
+-	if (!mesh.IsEmpty() && !ImagesHaveNeighbors()) {
+-		SampleMeshWithVisibility();
+-		mesh.Release();
+-	}
+-
+-	{
+-	// maps global view indices to our list of views to be processed
+-	IIndexArr imagesMap;
+-
+-	// prepare images for dense reconstruction (load if needed)
+-	{
+-		TD_TIMER_START();
+-		data.images.Reserve(images.GetSize());
+-		imagesMap.Resize(images.GetSize());
+-		#ifdef DENSE_USE_OPENMP
+-		bool bAbort(false);
+-		#pragma omp parallel for shared(data, bAbort)
+-		for (int_t ID=0; ID<(int_t)images.GetSize(); ++ID) {
+-			#pragma omp flush (bAbort)
+-			if (bAbort)
+-				continue;
+-			const IIndex idxImage((IIndex)ID);
+-		#else
+-		FOREACH(idxImage, images) {
+-		#endif
+-			// skip invalid, uncalibrated or discarded images
+-			Image& imageData = images[idxImage];
+-			if (!imageData.IsValid()) {
+-				#ifdef DENSE_USE_OPENMP
+-				#pragma omp critical
+-				#endif
+-				imagesMap[idxImage] = NO_ID;
+-				continue;
+-			}
+-			// map image index
+-			#ifdef DENSE_USE_OPENMP
+-			#pragma omp critical
+-			#endif
+-			{
+-				imagesMap[idxImage] = data.images.GetSize();
+-				data.images.Insert(idxImage);
+-			}
+-			// reload image at the appropriate resolution
+-			unsigned nResolutionLevel(OPTDENSE::nResolutionLevel);
+-			const unsigned nMaxResolution(imageData.RecomputeMaxResolution(nResolutionLevel, OPTDENSE::nMinResolution, OPTDENSE::nMaxResolution));
+-			if (!imageData.ReloadImage(nMaxResolution)) {
+-				#ifdef DENSE_USE_OPENMP
+-				bAbort = true;
+-				#pragma omp flush (bAbort)
+-				continue;
+-				#else
+-				return false;
+-				#endif
+-			}
+-			imageData.UpdateCamera(platforms);
+-			// print image camera
+-			DEBUG_ULTIMATE("K%d = \n%s", idxImage, cvMat2String(imageData.camera.K).c_str());
+-			DEBUG_LEVEL(3, "R%d = \n%s", idxImage, cvMat2String(imageData.camera.R).c_str());
+-			DEBUG_LEVEL(3, "C%d = \n%s", idxImage, cvMat2String(imageData.camera.C).c_str());
+-		}
+-		#ifdef DENSE_USE_OPENMP
+-		if (bAbort || data.images.IsEmpty()) {
+-		#else
+-		if (data.images.IsEmpty()) {
+-		#endif
+-			VERBOSE("error: preparing images for dense reconstruction failed (errors loading images)");
+-			return false;
+-		}
+-		VERBOSE("Preparing images for dense reconstruction completed: %d images (%s)", images.GetSize(), TD_TIMER_GET_FMT().c_str());
+-	}
+-
+-	// select images to be used for dense reconstruction
+-	{
+-		TD_TIMER_START();
+-		// for each image, find all useful neighbor views
+-		IIndexArr invalidIDs;
+-		#ifdef DENSE_USE_OPENMP
+-		#pragma omp parallel for shared(data, invalidIDs)
+-		for (int_t ID=0; ID<(int_t)data.images.GetSize(); ++ID) {
+-			const IIndex idx((IIndex)ID);
+-		#else
+-		FOREACH(idx, data.images) {
+-		#endif
+-			const IIndex idxImage(data.images[idx]);
+-			ASSERT(imagesMap[idxImage] != NO_ID);
+-			DepthData& depthData(data.depthMaps.arrDepthData[idxImage]);
+-			if (!data.depthMaps.SelectViews(depthData)) {
+-				#ifdef DENSE_USE_OPENMP
+-				#pragma omp critical
+-				#endif
+-				invalidIDs.InsertSort(idx);
+-			}
+-		}
+-		RFOREACH(i, invalidIDs) {
+-			const IIndex idx(invalidIDs[i]);
+-			imagesMap[data.images.Last()] = idx;
+-			imagesMap[data.images[idx]] = NO_ID;
+-			data.images.RemoveAt(idx);
+-		}
+-		// globally select a target view for each reference image
+-		if (OPTDENSE::nNumViews == 1 && !data.depthMaps.SelectViews(data.images, imagesMap, data.neighborsMap)) {
+-			VERBOSE("error: no valid images to be dense reconstructed");
+-			return false;
+-		}
+-		ASSERT(!data.images.IsEmpty());
+-		VERBOSE("Selecting images for dense reconstruction completed: %d images (%s)", data.images.GetSize(), TD_TIMER_GET_FMT().c_str());
+-	}
+-	}
+-
+-	#ifdef _USE_CUDA
+-	// initialize CUDA
+-	if (CUDA::desiredDeviceID >= -1 && data.nFusionMode >= 0) {
+-		data.depthMaps.pmCUDA = new PatchMatchCUDA(CUDA::desiredDeviceID);
+-		if (CUDA::devices.IsEmpty())
+-			data.depthMaps.pmCUDA.Release();
+-		else
+-			data.depthMaps.pmCUDA->Init(false);
+-	}
+-	#endif // _USE_CUDA
+-
+-	// initialize the queue of images to be processed
+-	const int nOptimize(OPTDENSE::nOptimize);
+-	if (OPTDENSE::nEstimationGeometricIters && data.nFusionMode >= 0)
+-		OPTDENSE::nOptimize = 0;
+-	data.idxImage = 0;
+-	ASSERT(data.events.IsEmpty());
+-	data.events.AddEvent(new EVTProcessImage(0));
+-	// start working threads
+-	data.progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
+-	GET_LOGCONSOLE().Pause();
+-	if (nMaxThreads > 1) {
+-		// multi-thread execution
+-		cList<SEACAVE::Thread> threads(2);
+-		FOREACHPTR(pThread, threads)
+-			pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
+-		FOREACHPTR(pThread, threads)
+-			pThread->join();
+-	} else {
+-		// single-thread execution
+-		DenseReconstructionEstimate((void*)&data);
+-	}
+-	GET_LOGCONSOLE().Play();
+-	if (!data.events.IsEmpty())
+-		return false;
+-	data.progress.Release();
+-
+-	if (data.nFusionMode >= 0) {
+-		#ifdef _USE_CUDA
+-		// initialize CUDA
+-		if (data.depthMaps.pmCUDA && OPTDENSE::nEstimationGeometricIters) {
+-			data.depthMaps.pmCUDA->Release();
+-			data.depthMaps.pmCUDA->Init(true);
+-		}
+-		#endif // _USE_CUDA
+-		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
+-			// initialize the queue of images to be geometric processed
+-			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
+-				OPTDENSE::nOptimize = nOptimize;
+-			data.idxImage = 0;
+-			ASSERT(data.events.IsEmpty());
+-			data.events.AddEvent(new EVTProcessImage(0));
+-			// start working threads
+-			data.progress = new Util::Progress("Geometric-consistent estimated depth-maps", data.images.GetSize());
+-			GET_LOGCONSOLE().Pause();
+-			if (nMaxThreads > 1) {
+-				// multi-thread execution
+-				cList<SEACAVE::Thread> threads(2);
+-				FOREACHPTR(pThread, threads)
+-					pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
+-				FOREACHPTR(pThread, threads)
+-					pThread->join();
+-			} else {
+-				// single-thread execution
+-				DenseReconstructionEstimate((void*)&data);
+-			}
+-			GET_LOGCONSOLE().Play();
+-			if (!data.events.IsEmpty())
+-				return false;
+-			data.progress.Release();
+-			// replace raw depth-maps with the geometric-consistent ones
+-			for (IIndex idx: data.images) {
+-				const DepthData& depthData(data.depthMaps.arrDepthData[idx]);
+-				if (!depthData.IsValid())
+-					continue;
+-				const String rawName(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
+-				File::deleteFile(rawName);
+-				File::renameFile(ComposeDepthFilePath(depthData.GetView().GetID(), "geo.dmap"), rawName);
+-			}
+-		}
+-		data.nEstimationGeometricIter = -1;
+-	}
+-
+-	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_FILTER) != 0) {
+-		// initialize the queue of depth-maps to be filtered
+-		data.sem.Clear();
+-		data.idxImage = data.images.GetSize();
+-		ASSERT(data.events.IsEmpty());
+-		FOREACH(i, data.images)
+-			data.events.AddEvent(new EVTFilterDepthMap(i));
+-		// start working threads
+-		data.progress = new Util::Progress("Filtered depth-maps", data.images.GetSize());
+-		GET_LOGCONSOLE().Pause();
+-		if (nMaxThreads > 1) {
+-			// multi-thread execution
+-			cList<SEACAVE::Thread> threads(MINF(nMaxThreads, (unsigned)data.images.GetSize()));
+-			FOREACHPTR(pThread, threads)
+-				pThread->start(DenseReconstructionFilterTmp, (void*)&data);
+-			FOREACHPTR(pThread, threads)
+-				pThread->join();
+-		} else {
+-			// single-thread execution
+-			DenseReconstructionFilter((void*)&data);
+-		}
+-		GET_LOGCONSOLE().Play();
+-		if (!data.events.IsEmpty())
+-			return false;
+-		data.progress.Release();
+-	}
+-	return true;
+-} // ComputeDepthMaps
+-/*----------------------------------------------------------------*/
+-
+ void* DenseReconstructionEstimateTmp(void* arg) {
+ 	const DenseDepthMapData& dataThreads = *((const DenseDepthMapData*)arg);
+ 	dataThreads.scene.DenseReconstructionEstimate(arg);

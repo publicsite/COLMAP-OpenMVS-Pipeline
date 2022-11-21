@@ -1,0 +1,64 @@
+--- a/openMVS/libs/MVS/SceneReconstruct.cpp	2022-09-02 23:18:34.445273288 +0100
++++ b/openMVS/libs/MVS/SceneReconstruct.cpp	2022-09-02 23:17:45.088856483 +0100
+@@ -55,52 +55,8 @@
+ // uncomment to enable reconstruction algorithm of weakly supported surfaces
+ #define DELAUNAY_WEAKSURF
+ 
+-// uncomment to use IBFS algorithm for max-flow
+-// (faster, but not clear license policy)
+-#define DELAUNAY_MAXFLOW_IBFS
+-
+-
+ // S T R U C T S ///////////////////////////////////////////////////
+ 
+-#ifdef DELAUNAY_MAXFLOW_IBFS
+-#include "../Math/IBFS/IBFS.h"
+-template <typename NType, typename VType>
+-class MaxFlow
+-{
+-public:
+-	// Type-Definitions
+-	typedef NType node_type;
+-	typedef VType value_type;
+-	typedef IBFS::IBFSGraph graph_type;
+-
+-public:
+-	MaxFlow(size_t numNodes) {
+-		graph.initSize((int)numNodes, (int)numNodes*2);
+-	}
+-
+-	inline void AddNode(node_type n, value_type source, value_type sink) {
+-		ASSERT(ISFINITE(source) && source >= 0 && ISFINITE(sink) && sink >= 0);
+-		graph.addNode((int)n, source, sink);
+-	}
+-
+-	inline void AddEdge(node_type n1, node_type n2, value_type capacity, value_type reverseCapacity) {
+-		ASSERT(ISFINITE(capacity) && capacity >= 0 && ISFINITE(reverseCapacity) && reverseCapacity >= 0);
+-		graph.addEdge((int)n1, (int)n2, capacity, reverseCapacity);
+-	}
+-
+-	value_type ComputeMaxFlow() {
+-		graph.initGraph();
+-		return graph.computeMaxFlow();
+-	}
+-
+-	inline bool IsNodeOnSrcSide(node_type n) const {
+-		return graph.isNodeOnSrcSide((int)n);
+-	}
+-
+-protected:
+-	graph_type graph;
+-};
+-#else
+ #include <boost/graph/graph_traits.hpp>
+ #include <boost/graph/one_bit_color_map.hpp>
+ #include <boost/property_map/property_map.hpp>
+@@ -186,7 +142,7 @@
+ 	const node_type S;
+ 	const node_type T;
+ };
+-#endif
++
+ /*----------------------------------------------------------------*/
+ 
+ 
