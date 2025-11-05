@@ -57,4 +57,4 @@ cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT="${thepwd}/vcglib" -DBU
 #build OpenMVS library:
 make -j2
 
-umask "$(OLD_UMASK)"
+umask "${OLD_UMASK}"
