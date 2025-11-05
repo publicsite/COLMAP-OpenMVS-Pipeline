@@ -1,4 +1,8 @@
 #!/bin/sh
+
+OLD_UMASK="$(umask)"
+umask 0022
+
 #based on https://github.com/cdcseacave/openMVS/issues/692
 
 PROJECT="${PWD}/project"
@@ -110,5 +114,6 @@ find ${PROJECT}/sparse/ -maxdepth 1 -mindepth 1 | while read areconstruction; do
 			--resolution-level 2 \
 			--decimate 0.05
 	fi
-
 done
+
+umask "$(OLD_UMASK)"
