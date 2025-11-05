@@ -116,4 +116,4 @@ find ${PROJECT}/sparse/ -maxdepth 1 -mindepth 1 | while read areconstruction; do
 	fi
 done
 
-umask "$(OLD_UMASK)"
+umask "${OLD_UMASK}"
