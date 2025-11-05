@@ -1,5 +1,8 @@
 #!/bin/sh
 
+OLD_UMASK="$(umask)"
+umask 0022
+
 thepwd=${PWD}
 
 #Prepare and empty machine for building:
@@ -53,3 +56,5 @@ cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT="${thepwd}/vcglib" -DBU
 
 #build OpenMVS library:
 make -j2
+
+umask "$(OLD_UMASK)"
